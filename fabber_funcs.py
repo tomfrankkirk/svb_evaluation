@@ -59,7 +59,7 @@ def basil_surface(asl, mask, opts, odir, pvs, projector):
     gmftiss_surf = projector.vol2surf(gmftiss.flatten(), edge_scale=False)
     return gmftiss_surf
 
-def oxasl_cmd(asl, mask, odir, opts, pvs, projector, inferatt=True):
+def oxasl_cmd(asl, mask, odir, opts, pvs, projector):
     
     os.makedirs(odir, exist_ok=True)
 
@@ -76,9 +76,9 @@ def oxasl_cmd(asl, mask, odir, opts, pvs, projector, inferatt=True):
     optspath = op.join(odir, 'bopts.txt')
     opts = copy.deepcopy(opts)
     cmd = [
-        "oxasl", "-i", apath, "-m", mpath, "-o", odir, "--iaf", "diff", "--order", "rt", 
-        "--fit-options", optspath, "--casl", "--artoff",
-        "--debug", "--no-report", "--overwrite"
+        "oxasl", "-i", apath, "-m", mpath, "-o", odir, "--iaf", "diff",  
+        "--fit-options", optspath, "--casl", "--artoff", '--ibf', opts.pop('ibf'), 
+        "--debug", "--no-report", "--overwrite", "--bolus", str(opts.pop('bolus')), 
     ] 
 
     plds = opts.pop('plds')
@@ -87,8 +87,6 @@ def oxasl_cmd(asl, mask, odir, opts, pvs, projector, inferatt=True):
 
     with open(optspath, 'w') as f: 
         for key,val in opts.items():
-            if not inferatt: 
-                f.write("--fixbat\n--fixbatwm\n")
             if val is not True: 
                 f.write(f"--{key}={val}\n")
             else: 
@@ -109,6 +107,7 @@ def oxasl_cmd(asl, mask, odir, opts, pvs, projector, inferatt=True):
 
 if __name__ == '__main__': 
     
+    pass
     data = 'hybrid_test/simdata.nii.gz'
     mask = data
     opts = { 'bolus': 1.8, 'repeats': 5, 'ti1': 1.25 }
