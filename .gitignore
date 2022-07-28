@@ -3,3 +3,4 @@ sph_test
 .DS_Store
 __pycache__
 .ipynb_checkpoints
+vertex_density_*
