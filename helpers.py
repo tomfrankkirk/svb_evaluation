@@ -1,41 +1,41 @@
-import numpy as np 
+import sys
+import os.path as op
+
+from svb.data import DataModel
+from svb_models_asl import AslRestModel
+from svb_models_asl.aslrest import TIME_SCALE
+
+import numpy as np
+import toblerone as tob 
 import pyvista as pv 
-import sys 
+    
+np.random.seed(1)
 
-sys.path.insert(1, '/Users/thomaskirk/modules/svb_module')
-from svb.main import run
-from svb.data import HybridModel
+PLDS = np.array([0.25, 0.5, 0.75, 1.0, 1.25, 1.5]) * TIME_SCALE
 
-sys.path.insert(1, '/Users/thomaskirk/modules/svb_models_asl')
-from svb_models_asl import AslRestModel 
+GM_ATT = 1.1 * TIME_SCALE
+WM_ATT = 1.8 * TIME_SCALE
+GM_CBF = 60 
+WM_CBF = 20 
 
-try:
-    import tensorflow.compat.v1 as tf
-    tf.disable_v2_behavior()
-except ImportError:
-    import tensorflow as tf
-
-def pv_plot(surface, data, **kwargs):
-    pl = pv.Plotter(window_size=(600, 400))
-    faces = 3 * np.ones((surface.tris.shape[0], 4), dtype=int)
-    faces[:,1:] = surface.tris 
-    mesh = pv.PolyData(surface.points, faces=faces).rotate_z(240, inplace=True)
-    pl.add_mesh(mesh, scalars=data, **kwargs)
-    pl.show(jupyter_backend='panel')
-
-def cart2sph(x, y, z):
-    hxy = np.hypot(x, y)
-    r = np.hypot(hxy, z)
-    el = np.arctan2(z, hxy)
-    az = np.arctan2(y, x)
-    return az, el, r
+ROI_NAMES = [ 'T1_first-L_Accu_first', 'T1_first-L_Amyg_first', 'T1_first-L_Caud_first', 'T1_first-L_Hipp_first', 'T1_first-L_Pall_first', 'T1_first-L_Puta_first', 'T1_first-L_Thal_first' ]
+SUBCORT_CBF = np.array([45, 50, 55, 60, 65, 70, 75])
 
 def make_activation(sph): 
 
-    az, el, r = cart2sph(*(sph.points - sph.points.mean(0)).T)
+    def cart2sph(x, y, z):
+        hxy = np.hypot(x, y)
+        r = np.hypot(hxy, z)
+        el = np.arctan2(z, hxy)
+        az = np.arctan2(y, x)
+        return az, el, r
+
+    az, el, _ = cart2sph(*(sph.points - sph.points.mean(0)).T)
+
 
     scale = 6
     ctx_cbf = 40 + 20 * (np.sin(scale * el)**2 + np.sin(scale/2 * az)**2)
+    adj = sph.adjacency_matrix()
 
     mask = ctx_cbf * np.ones_like(ctx_cbf)
     mask[np.abs(el) > (0.40) * np.pi] = 60
@@ -44,7 +44,6 @@ def make_activation(sph):
     low = mask < 41
 
     rounds = 6
-    adj = sph.adjacency_matrix()
     for _ in range(rounds): 
         for idx in np.flatnonzero(high): 
             neighbours = adj[idx,:].indices
@@ -58,7 +57,13 @@ def make_activation(sph):
     cbf[high] = 80 
     cbf[low] = 40 
 
-    rounds = 5
+    mask = ctx_cbf * np.ones_like(ctx_cbf)
+    mask[np.abs(el) > (0.40) * np.pi] = 60
+    mask[np.abs(el) > 0.49 * np.pi] = 80
+    high = mask > 79
+    low = mask < 41
+
+    rounds = 20
     cbf_smooth = cbf * np.ones_like(cbf)
     for _ in range(rounds): 
         cbf_smooth = ((adj @ cbf_smooth) + cbf_smooth) / (1 + adj.sum(1).A.flatten())
@@ -66,29 +71,44 @@ def make_activation(sph):
     return cbf_smooth
 
 
-def simulate_data(noise, rpt, ctx_cbf, proj, plds):
 
-    data = np.empty((*proj.spc.size, len(plds) * rpt), dtype=np.int8)
-    data_model = HybridModel(proj.spc.make_nifti(data), projector=proj)
+def simulate_data(proj, noise, rpt, ctx_cbf=None):
+    data = np.zeros((proj.spc.size.prod(), len(PLDS) * rpt), dtype=np.float32)
+    data_model = DataModel(proj.spc.make_nifti(data), mode='hybrid', projector=proj)
     asl_model = AslRestModel(data_model,
-            plds=plds, repeats=rpt, casl=True)
+            plds=PLDS, repeats=rpt, casl=True)
 
-    with tf.Session() as sess:
-        cbf = np.concatenate([
-                ctx_cbf, 
-                20 * np.ones(data_model.n_vol_nodes),
-                60 * np.ones(data_model.n_roi_nodes)  ]) 
+    if ctx_cbf is None: 
+        ctx_cbf = 60 * np.ones(data_model.n_surf_nodes)
+    else: 
+        ctx_cbf = ctx_cbf[data_model.surf_nodes]
 
-        att = np.concatenate([
-                1.3 * np.ones(data_model.n_surf_nodes), 
-                1.6 * np.ones(data_model.n_vol_nodes),
-                1.3 * np.ones(data_model.n_roi_nodes)  ]) 
+    cbf = np.concatenate([
+            ctx_cbf, 
+            WM_CBF * np.ones(data_model.n_vol_nodes),
+            SUBCORT_CBF 
+                ]) 
 
-        data = sess.run(asl_model.evaluate(
-                [ cbf[:,None].astype(np.float32), 
-                  att[:,None].astype(np.float32) ], 
-                  asl_model.tpts()))
+    att = np.concatenate([
+            GM_ATT * np.ones(data_model.n_surf_nodes), 
+            WM_ATT * np.ones(data_model.n_vol_nodes),
+            GM_ATT * np.ones(data_model.n_roi_nodes) 
+                ]) 
 
-    data = (data_model.n2v_coo @ data).reshape(*proj.spc.size, -1)
-    data += np.random.normal(0, noise, size=data.shape)
-    return data
+    data = asl_model.test_voxel_data(
+        params={ 'ftiss': cbf.astype(np.float32), 
+                 'delttiss': att.astype(np.float32) }, 
+        tpts=asl_model.tpts(), 
+        noise_sd=noise, 
+        masked=False)
+
+    return data, data_model
+
+
+def pv_plot(surface, data, **kwargs):
+    pl = pv.Plotter(window_size=(600, 400))
+    faces = 3 * np.ones((surface.tris.shape[0], 4), dtype=int)
+    faces[:,1:] = surface.tris 
+    mesh = pv.PolyData(surface.points, faces=faces).rotate_z(240, inplace=True)
+    pl.add_mesh(mesh, scalars=data, **kwargs)
+    pl.show(jupyter_backend='pythreejs')
